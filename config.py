@@ -7,16 +7,30 @@ config.py
 
 # ===================== 摄像头与窗口 =====================
 CAMERA_INDEX = 0          # 摄像头编号（默认 0 为内置摄像头，外接触发可改为 1）
-WINDOW_WIDTH = 1280       # 视频窗口宽度（像素）
-WINDOW_HEIGHT = 720       # 视频窗口高度（像素）
+WINDOW_WIDTH = 960        # 视频窗口宽度（像素）
+WINDOW_HEIGHT = 540       # 视频窗口高度（像素）
 WINDOW_NAME = "存在的残像 · 数字影子记忆系统"  # 显示窗口标题
 
 # ===================== MediaPipe 检测参数 =====================
 MIN_DETECTION_CONFIDENCE = 0.5   # 人体检测最低置信度（0~1，越高越严格）
 MIN_TRACKING_CONFIDENCE = 0.5    # 关键点跟踪最低置信度（0~1）
-POSE_MODEL_COMPLEXITY = 1        # 模型复杂度（0=轻量，1=完整，2=重型）
-SEGMENTATION_MODEL = 1           # Selfie Segmentation 模型（0=轻量，1=完整）
-SEGMENTATION_THRESHOLD = 0.6     # 人体分割阈值（0~1，高于该值视为人体像素）
+POSE_MODEL_COMPLEXITY = 0        # 模型复杂度（0=轻量，1=完整，2=重型）— 性能优化：改用轻量模型
+SEGMENTATION_MODEL = 0           # Selfie Segmentation 模型（0=轻量，速度优先；1=完整，质量优先）
+SEGMENTATION_THRESHOLD = 0.35    # 人体分割阈值（0~1，调低以保留手臂等低置信度部位）
+
+# ===================== 分割掩码时间稳定（稳定数字影子） =====================
+# 说明：数字影子由 MediaPipe Selfie Segmentation 生成真实人体剪影形状，
+# 以下参数用于对该分割概率做时间平滑，抑制快速动作时的闪烁/手臂缺失。
+SEG_TEMPORAL_ALPHA = 0.8         # 分割概率 EMA 系数（0~1，调高使手臂等快速部位更跟手、不丢失）
+SEG_MIN_AREA = 0.002            # 兜底阈值（占掩码总像素比例）：低于该值视为人体短暂丢失，沿用上一帧
+
+# ===================== 推理性能优化 =====================
+# 说明：MediaPipe 在降分辨率图上推理，mask 再放大回原尺寸，可大幅提升 FPS；
+# 关键点归一化，降分辨率不影响行为分析精度。
+INFER_SCALE = 0.60             # 推理分辨率缩放（进一步降低计算负担，保持实时交互）
+POSE_INTERVAL = 3               # 每 N 帧才运行一次 Pose（其余帧复用缓存），降低开销
+POSE_SMOOTHING_ALPHA = 0.55    # 关键点平滑系数（0~1，越大越跟手，越小越平滑）
+SEGMENT_INTERVAL = 2           # 每 N 帧才运行一次人体分割，其他帧复用上一帧结果
 
 # ===================== 历史记忆保存 =====================
 MEMORY_DIR = "data"                      # 记忆数据存放目录
@@ -24,15 +38,32 @@ MEMORY_FILE = "data/memory.json"         # 历史行为记忆 JSON 文件路径
 MAX_MEMORY_RECORDS = 2000                # 内存中保留的最大行为记录数（防止无限增长）
 
 # ===================== 残影（视觉拖尾）参数 =====================
-AFTERIMAGE_COUNT = 12            # 残影数量（同时叠加的历史影子层数）
-AFTERIMAGE_DECAY = 0.82          # 残影透明度衰减参数（0~1，越接近 1 残影消失越慢）
-AFTERIMAGE_INTERVAL = 5          # 每隔多少帧采样一次残影（降低采样密度，拉长拖尾时间）
+AFTERIMAGE_COUNT = 8             # 残影数量上限（降低渲染负担）
+AFTERIMAGE_INTERVAL = 6          # 每隔多少帧采样一次残影（减少采样频率）
+# 残影生命周期（基于时间的连续衰减，保证 5~10 秒内完全消失）
+AFTERIMAGE_START_ALPHA = 0.55    # 新采样残影的初始透明度（降低浓度，避免残影变成一大片白块）
+AFTERIMAGE_TAU = 1.0             # 残影时间常数（秒）：alpha = start * exp(-age / TAU)
+                                 # 配合下方强度钳制，整体生命周期约 5~10 秒
+# 注：原 AFTERIMAGE_DECAY / AFTERIMAGE_FADE 已废弃（改为基于时间的连续衰减）
 
 # ===================== 行为分析阈值 =====================
 STAY_THRESHOLD = 0.02            # 重心位移小于该值视为"停留"（归一化坐标）
 MOVE_FREQ_WINDOW = 30            # 计算移动频率的滑动窗口帧数
 REPEAT_ACTION_WINDOW = 300       # 统计动作重复次数的时间窗口（秒）
 HIGH_FREQ_COUNT = 5              # 某动作出现次数超过该值视为"高频动作"
+
+# ===================== 行为学习（长期记忆反馈） =====================
+# 说明：由 MediaPipe Pose 关键点推导离散动作类别，建立按类别聚合的长期记忆，
+# 让数字影子根据用户习惯产生反馈（无需训练模型）。
+ACTION_MOVE_FREQ = 0.02         # 重心位移大于该值视为"移动中"
+ACTION_ARMS_UP_MARGIN = 0.08    # 手腕 y 高于肩膀 y 超过该值视为"举手"
+ACTION_SPREAD_RATIO = 1.6       # 手腕间距 / 肩宽 大于该值视为"张臂"
+ACTION_CROUCH_Y = 0.68          # 重心 y 大于该值视为"下蹲/低位"
+HIGH_FREQ_ACTION_COUNT = 3      # 某动作历史出现次数 ≥ 该值视为"高频动作"
+LONG_ACTION_DURATION = 2.5      # 当前动作持续 ≥ 该秒数（或历史均值）视为"长时间保持"
+HABIT_BOOST = 1.35              # 高频动作时残影起始透明度倍率（影子更容易出现）
+LONG_HOLD_TAU_MULT = 1.7        # 长时间保持动作时残影时间常数倍率（停留更久）
+ANTICIPATION_ALPHA = 0.2        # 已知动作重现时"提前残影"的起始透明度（预回声）
 
 # ===================== 颜色配置（BGR 格式） =====================
 COLOR_CURRENT = (0, 255, 255)    # 当前影子颜色（青黄）
@@ -45,6 +76,14 @@ SHADOW_BG_MODE = "black"
 SHADOW_FG_COLOR = (255, 255, 255)   # 人体剪影前景色（白）
 SHADOW_BG_COLOR = (0, 0, 0)         # 背景色（黑）
 # 残影（历史剪影）颜色：默认偏冷蓝，与当前白影区分
-SHADOW_AFTERIMAGE_COLOR = (180, 180, 200)
-# 残影模糊半径（像素），让残像更柔和
-AFTERIMAGE_BLUR = 7
+SHADOW_AFTERIMAGE_COLOR = (140, 140, 160)
+# 残影模糊半径（像素），让残像更柔和；为保证实时性，适度缩小半径。
+AFTERIMAGE_BLUR = 5
+# 影子边缘羽化半径（像素）：对 mask 边缘做高斯模糊，形成"雾化"数字影子。
+# 仅柔化边界、核心保持实心（二值 mask 内部全 1，模糊后仍为 1），
+# 不会变成整体模糊的人影。
+SHADOW_EDGE_FEATHER = 5          # 调小：减少高斯模糊成本，同时保留边缘感
+# 历史 body_mask 保存尺寸（将实时 mask 缩小后保存，减小 JSON 大小）
+MASK_SAVE_SIZE = 64
+# 渲染内部缩放：低分辨率合成残影并放大回原始画布，可显著提高 FPS（取 0.5~1.0）
+SHADOW_RENDER_SCALE = 0.5

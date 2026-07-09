@@ -4,6 +4,8 @@ main.py
 串联：PoseTracker → MemoryStore → BehaviorAnalyzer → ShadowRenderer
 """
 
+import time
+
 import cv2
 
 import config as cfg
@@ -23,6 +25,8 @@ def main():
     print("系统启动：按 'q' 退出")
 
     frame_counter = 0
+    last_fps_time = time.perf_counter()
+    fps = 0.0
     try:
         while True:
             # 2. 打开摄像头并获取人体姿态
@@ -30,15 +34,16 @@ def main():
             if not ret:
                 break
 
+            # 摄像头原始输出为镜像，水平翻转一次得到正向画面
+            frame = cv2.flip(frame, 1)
+
             frame_counter += 1
 
-            pose_data = tracker.get_pose_data(frame)
-
-            # 提取人体分割 mask（用于数字剪影）
-            body_mask = tracker.get_body_mask(frame)
+            # 性能优化：一次转换同时获取姿态与人体 mask
+            pose_data, body_mask = tracker.get_pose_and_mask(frame)
 
             # 4. 分析历史行为（先分析，拿到动作持续时间）
-            memory_state = analyzer.analyze_frame(pose_data, memory)
+            memory_state = analyzer.analyze_frame(pose_data, memory, body_mask=body_mask)
 
             # 3. 保存动作记忆（仅当检测到人体时，duration 来自 analyzer）
             landmarks = pose_data.get("landmarks", [])
@@ -47,17 +52,36 @@ def main():
                     pose_data["timestamp"],
                     landmarks,
                     duration=memory_state["duration"],
+                    action_category=memory_state["action_category"],
+                    move_direction=memory_state.get("move_dir", "idle"),
                 )
 
             # 5. 根据分析结果生成数字影子（黑底白影 + 残影）
             display = renderer.update(frame, pose_data, body_mask, memory_state)
+            print(
+                f"memory={memory.count()} recall={'yes' if memory_state.get('recall_triggered') else 'no'} "
+                f"source={'history' if memory_state.get('recall_triggered') else 'realtime'}"
+            )
 
             # 叠加文字信息
+            # 注意：OpenCV 原生字体（Hershey）仅支持 ASCII，中文会渲染成 '?'。
+            # 项目未引入 Pillow，故此处使用英文标签以保证正确显示。
+            now = time.perf_counter()
+            elapsed = now - last_fps_time
+            if elapsed > 0:
+                fps = 1.0 / elapsed
+                last_fps_time = now
+
+            cv2.putText(
+                display, f"FPS:{fps:.1f}", (20, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                (255, 255, 255), 2
+            )
             info = (
-                f"动作总数:{memory_state['total_actions']} "
-                f"近期:{memory_state['recent_count']} "
-                f"移动频率:{memory_state['move_freq']:.3f} "
-                f"强度:{memory_state['intensity']:.1f}"
+                f"Actions:{memory_state['total_actions']} "
+                f"Recent:{memory_state['recent_count']} "
+                f"MoveFreq:{memory_state['move_freq']:.3f} "
+                f"Intensity:{memory_state['intensity']:.1f}"
             )
             cv2.putText(
                 display, info, (20, 40),
@@ -66,7 +90,7 @@ def main():
             )
             if memory_state["high_freq"]:
                 cv2.putText(
-                    display, "高频动作残像增强",
+                    display, "High-freq afterimage boost",
                     (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                     cfg.COLOR_PAST, 2
                 )
