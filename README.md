@@ -1,121 +1,176 @@
-# 存在的残像：基于 Python 与人体姿态识别的数字影子记忆系统
+# ShadowMemory
+
+## 基于人体姿态识别与行为记忆的数字影子交互系统
 
 ## 项目简介
 
-《存在的残像》是一个基于 Python 计算机视觉的交互艺术项目。用户进入摄像头范围后，系统生成一个"数字影子"。影子不是简单跟随用户，而是会**保存用户过去的动作**，并根据历史行为产生不同反馈（高频动作产生更明显残影、长时间停留位置留下更久影子、新动作产生不同反馈）。
+ShadowMemory 是一个基于计算机视觉与行为记忆机制的交互艺术项目。
 
-本项目的"学习"不是训练 AI 模型，而是基于历史数据的**记忆系统**：用 JSON 保存行为数据，用简单数学算法分析趋势并改变影子表现。
+系统通过摄像头实时捕捉用户身体姿态，将用户动作转化为数字影子。随着用户在交互空间中的移动、停留以及姿态变化，系统会记录用户的行为状态，并在满足触发条件时召回过去保存的动作，生成具有时间痕迹的历史影子。
 
-## 核心理念
+本项目探索人与数字系统之间关于**记忆、存在与时间痕迹**的关系。
 
-现实中的影子随人移动而变化，但无法留下过去的痕迹。本项目尝试构建一个能感知人体行为、记录动作轨迹的数字影子，使用户过去的动作以**数字残像**的形式被保存与重现。
+---
 
-## 技术栈
+## 功能特点
 
-- **Python 3.11**（⚠️ 见下方"环境要求"）
-- **OpenCV** — 读取摄像头、图像处理
-- **MediaPipe Pose** (`mp.solutions.pose`) — 人体 33 个关键点检测
-- **NumPy** — 关键点数据处理、向量计算
-- **JSON** — 历史行为数据持久化（无数据库）
+### 1. 实时人体姿态识别
 
-## 环境要求（重要）
+系统使用 MediaPipe Pose 进行人体关键点检测：
 
-本项目使用 MediaPipe 的旧版 `mp.solutions.pose` API，该 API **仅存在于 MediaPipe ≤ 0.10.14**，且**不支持 Python 3.13 / 3.14**。
+- 实时获取人体姿态信息
+- 提取身体关键点数据
+- 分析用户当前动作状态
 
-你的系统默认是 Python 3.13，因此**必须**使用 Python 3.11 虚拟环境运行。项目内已创建好 `venv/`（基于 Python 3.11.9）。
+---
 
-> 若需自行重建环境：
-> ```bash
-> winget install Python.Python.3.11
-> py -3.11 -m venv venv
-> venv\Scripts\python.exe -m pip install -r requirements.txt
-> ```
+### 2. 数字影子生成
+
+根据用户实时动作生成对应的数字影子：
+
+- 实时响应用户动作
+- 根据人体姿态生成视觉反馈
+- 支持当前动作的动态变化
+
+---
+
+### 3. 行为记忆系统
+
+系统包含一个行为记忆模块，用于保存用户过去的动作信息。
+
+主要功能：
+
+- 保存用户稳定状态下的姿态样本
+- 管理历史动作数据
+- 为历史召回提供数据支持
+
+---
+
+### 4. 历史动作召回
+
+当系统检测到用户保持某种状态达到触发条件时，会从历史记忆中选择过去保存的动作。
+
+召回流程：
+
+1. 分析用户当前行为状态
+2. 判断是否满足召回条件
+3. 从 MemoryStore 中获取历史姿态
+4. 渲染过去动作形成历史残影
+
+---
 
 ## 项目结构
 
-```
-shadowMemory/
-├── README.md            # 项目说明（本文件）
-├── requirements.txt     # 依赖（mediapipe==0.10.14, opencv-python, numpy）
-├── config.py            # 全局配置参数（阈值、颜色、衰减系数等）
-├── pose_tracker.py      # PoseTracker 类：摄像头 + MediaPipe 关键点提取
-├── memory_store.py      # MemoryStore 类：JSON 行为记忆读写
-├── analyzer.py          # BehaviorAnalyzer 类：历史趋势分析
-├── shadow_renderer.py   # ShadowRenderer 类：当前影子 + 残影叠加渲染
-├── main.py              # 主循环：串联以上模块
-├── memory.json          # 运行时自动生成的历史行为数据
-└── venv/                # Python 3.11 虚拟环境（已装好依赖）
-```
+ShadowMemory/
 
-## 各文件作用
+├── README.md
 
-| 文件 | 类 / 职责 |
-|------|-----------|
-| `config.py` | 集中管理所有可调参数：摄像头索引、关键点置信度阈值、动作判定阈值、残影数量与衰减、颜色映射等 |
-| `pose_tracker.py` | `PoseTracker`：打开摄像头，调用 MediaPipe Pose 提取 33 个关键点（用于行为记忆/分析），同时调用 MediaPipe **Selfie Segmentation** 生成人体二值 mask（用于剪影）；提供 `get_pose_data()` / `get_body_mask()` / `release()` |
-| `memory_store.py` | `MemoryStore`：将每次"动作片段"（时间、关键点序列、持续时间、变化趋势）追加写入 `memory.json`；提供加载、统计、按动作类型聚合的接口 |
-| `analyzer.py` | `BehaviorAnalyzer`：读取记忆，计算重复次数、停留时长、移动频率变化，输出"高频动作 / 长停留位置 / 新动作"等反馈信号 |
-| `shadow_renderer.py` | `ShadowRenderer`：用人体 mask 在纯色背景上绘制**白色（或黑色）人体剪影**，并把历史 mask 以透明度递减的残影叠加，形成"数字残像"；不再显示 MediaPipe 骨架 |
-| `main.py` | 初始化各模块，进入 `while` 循环：取帧 → 姿态+分割 → 记忆 → 分析 → 渲染剪影 → 显示；按 `q` 退出并保存记忆 |
+├── requirements.txt
 
-## 数据流流程
+├── src/
 
-```
-摄像头 (OpenCV)
-   │  BGR 帧
-   ▼
-PoseTracker.get_pose_data(frame)  →  33 个关键点 (x, y, z)   [用于行为记忆/分析]
-PoseTracker.get_body_mask(frame)  →  人体二值 mask (0/255)    [用于剪影]
-   │
-   ▼
-[记忆] 关键点 → MemoryStore（时间/关键点/时长/趋势）→ memory.json
-   │
-   ▼
-BehaviorAnalyzer.analyze()  →  重复次数↑ / 停留时长↑ / 移动频率变化 → 反馈信号
-   │
-   ▼
-ShadowRenderer.update(frame, pose_data, body_mask, memory_state)
-   │  ① 历史 mask 残影：透明度递减叠加（越早越淡）
-   │  ② 当前人体 mask → 纯色背景上的白色（或黑色）剪影
-   ▼
-画面 = 黑底（或白底）+ 当前人体剪影 + 过去残影（透明度递减）
-   │
-   ▼
-cv2.imshow() 显示（不再显示摄像头原画面与骨架）
-```
+│   ├── main.py
+
+│   ├── config.py
+
+│   ├── pose_tracker.py
+
+│   ├── analyzer.py
+
+│   ├── memory_store.py
+
+│   └── shadow_renderer.py
+
+│
+
+├── data/
+
+└── tests/
+
+---
+
+## 技术栈
+
+- Python
+- OpenCV
+- MediaPipe Pose
+- NumPy
+
+---
 
 ## 运行方式
 
-使用项目内已配置好的 Python 3.11 虚拟环境：
+创建虚拟环境：
 
-```bash
-# 1. 激活虚拟环境（Windows PowerShell）
-.\venv\Scripts\Activate.ps1
+python -m venv .venv
 
-# 2. 运行主程序
-python main.py
-```
+安装依赖：
 
-程序启动后自动调用摄像头（默认索引 0）。检测到人体时显示蓝色"当前影子"；历史动作会以递减透明度的残影重现。按 `q` 退出，记忆自动保存到 `memory.json`。
+pip install -r requirements.txt
 
-## 功能对照（需求 → 实现）
+运行：
 
-1. **实时检测人体** → `PoseTracker` 每帧调用 MediaPipe Pose + Selfie Segmentation
-2. **提取关键点** → 33 个关键点 (x, y, z) 用于行为记忆；人体 mask 用于剪影
-3. **行为记忆模块** → `MemoryStore` 保存：时间 / 关键点 / 动作持续时间 / 变化趋势
-4. **分析历史行为** → `BehaviorAnalyzer`：重复次数、停留时长、移动频率
-5. **改变影子** → 高频动作残影更明显、长停留位置影子更久、新动作不同反馈
-6. **视觉效果** → **黑底白色人体剪影**（或白底黑影）+ 过去残影（透明度递减），不显示摄像头原画面与 MediaPipe 骨架
+python src/main.py
 
-## 视觉风格说明
+---
 
-- 默认 `SHADOW_BG_MODE = "black"`：**黑底 + 白色人体剪影**（最符合"数字残像"氛围）。
-- 可在 `config.py` 改为 `"white"` 得到**白底 + 黑色剪影**。
-- 残影使用 `Selfie Segmentation` 的 mask 历史帧，按时间透明度递减叠加，形成拖尾残像。
-- 所有视觉参数集中在 `config.py` 的"数字影子视觉风格"段落，便于演示时快速调参。
+## 核心模块
 
-## 开发说明
+### PoseTracker
 
-- 不训练模型、不使用深度学习、不使用数据库——纯 JSON + NumPy 数学算法实现"记忆"。
-- 所有可调参数集中在 `config.py`，便于演示时快速调参。
-- 历史数据存于 `memory.json`，删除该文件即可重置记忆。
+负责：
+
+- 摄像头输入
+- 人体姿态检测
+- 关键点提取
+
+
+### BehaviorAnalyzer
+
+负责：
+
+- 用户行为分析
+- 稳定姿态检测
+- 历史召回触发
+
+
+### MemoryStore
+
+负责：
+
+- 历史姿态保存
+- 记忆数据管理
+- 历史动作检索
+
+
+### ShadowRenderer
+
+负责：
+
+- 实时影子渲染
+- 历史残影渲染
+- 当前动作与历史动作融合
+
+---
+
+## 项目理念
+
+ShadowMemory 探索人与数字记忆之间的关系。
+
+系统不仅响应用户当前动作，也尝试保存过去的行为痕迹，使数字影子成为连接过去与现在的媒介。
+
+---
+
+## 后续改进方向
+
+- 更复杂的行为学习机制
+- 多用户记忆系统
+- AI 动作预测
+- 更丰富的视觉效果
+- 长期个性化交互
+
+---
+
+## License
+
+本项目用于交互艺术研究与教学展示。
