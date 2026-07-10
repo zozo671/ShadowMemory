@@ -161,6 +161,13 @@ ShadowMemory 探索人与数字记忆之间的关系。
 
 ---
 
+## Demo Video
+
+项目演示视频：
+
+Download:
+[ShadowMemory Demo Video](https://github.com/zozo671/ShadowMemory/releases/tag/v1.0-demo)
+
 ## 后续改进方向
 
 - 更复杂的行为学习机制
