@@ -8,11 +8,11 @@ import time
 
 import cv2
 
-import config as cfg
-from pose_tracker import PoseTracker
-from memory_store import MemoryStore
-from analyzer import BehaviorAnalyzer
-from shadow_renderer import ShadowRenderer
+from . import config as cfg
+from .pose_tracker import PoseTracker
+from .memory_store import MemoryStore
+from .analyzer import BehaviorAnalyzer
+from .shadow_renderer import ShadowRenderer
 
 
 def main():
@@ -56,10 +56,6 @@ def main():
 
             # 5. 根据分析结果生成数字影子（黑底白影 + 残影）
             display = renderer.update(frame, pose_data, body_mask, memory_state)
-            print(
-                f"memory={memory.count()} recall={'yes' if memory_state.get('recall_triggered') else 'no'} "
-                f"source={'history' if memory_state.get('recall_triggered') else 'realtime'}"
-            )
 
             # 6. 实时显示
             cv2.imshow(cfg.WINDOW_NAME, display)

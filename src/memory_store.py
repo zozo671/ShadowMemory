@@ -9,7 +9,7 @@ import json
 import cv2
 import numpy as np
 
-import config as cfg
+from . import config as cfg
 
 
 class MemoryStore:
@@ -27,8 +27,10 @@ class MemoryStore:
         self.profile = {}
         # 过去姿态样本：仅保存少量关键点，供“过去动作召回”使用
         self.pose_examples = []
-        # 加载已有历史（若存在）
-        self.load()
+        # 每次启动从空白记忆开始：不读取上一次运行保存的历史召回数据。
+        # 仍确保文件存在（为空文件），运行中的实时保存/召回与退出落盘不受影响。
+        if not os.path.exists(self.file_path):
+            self._write_file()
 
     def load(self):
         """从 JSON 文件加载过去的历史行为数据（兼容旧版纯列表格式）。"""

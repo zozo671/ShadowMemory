@@ -8,7 +8,7 @@ analyzer.py
 
 import numpy as np
 
-import config as cfg
+from . import config as cfg
 
 # MediaPipe Pose 关键点索引（与 pose_tracker 保持一致）
 _L_SHOULDER, _R_SHOULDER = 11, 12
@@ -180,17 +180,10 @@ class BehaviorAnalyzer:
             if recall_target is not None:
                 recall_triggered = True
                 self.last_recall_time = now
-                print(f"[analyzer] recall triggered: stay_timer={self.stay_timer:.2f} target={recall_target.get('action')}")
-                # debug: 输出 recall 目标的键，确认是否包含 mask 字段
-                try:
-                    keys = list(recall_target.keys())
-                except Exception:
-                    keys = []
-                print(f"[recall] target keys: {keys}")
             else:
                 print("[analyzer] recall target missing")
         else:
-            print(f"[analyzer] stay={is_staying:.0f} stay_timer={self.stay_timer:.2f} landmarks={bool(landmarks)}")
+            pass
 
         # ---- 重复动作统计（基于历史记录，兼容旧逻辑） ----
         total_actions = len(memory_store.get_all())

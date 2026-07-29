@@ -1,6 +1,6 @@
 import unittest
 
-from shadow_renderer import ShadowRenderer
+from src.shadow_renderer import ShadowRenderer
 
 
 class RendererRecallTests(unittest.TestCase):

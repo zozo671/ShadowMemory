@@ -10,7 +10,7 @@ import mediapipe as mp
 import numpy as np
 import time
 
-import config as cfg
+from . import config as cfg
 
 
 class PoseTracker:
@@ -126,6 +126,7 @@ class PoseTracker:
                         "x": lm.x,
                         "y": lm.y,
                         "z": lm.z,
+                        "visibility": getattr(lm, "visibility", 0.0),
                     })
                 self._last_pose_valid = True
             else:
@@ -158,7 +159,126 @@ class PoseTracker:
             "timestamp": time.time(),
             "landmarks": raw_landmarks,
         }
+
+        # 姿态辅助修补：当分割漏掉四肢（尤其肩-肘-腕链路）时，
+        # 用 Pose landmarks 生成膨胀区域 mask 与原 mask 做 OR 合并。
+        # 仅在 segmentation 缺失且 landmark 可见性足够时才修补，不替换整体结果。
+        if cfg.MASK_LIMB_REPAIR and body_visible:
+            body_mask = self._repair_mask_with_pose(body_mask, raw_landmarks, w, h)
+
         return pose_data, body_mask
+
+    def _repair_mask_with_pose(self, mask, landmarks, w, h):
+        """
+        利用 MediaPipe Pose landmarks 对分割 mask 做轻量四肢修补。
+
+        仅针对肩-肘-腕链路（左右臂）。当该链路端点附近 segmentation 缺失、
+        且关键点可见性 >= MASK_LIMB_MIN_VIS 时，沿骨骼连线生成**有宽度的手臂区域**
+        （近端宽、远端窄的锥形填充块 + 关节椭圆），而非刚性骨架线；
+        再与原 mask 做 OR 合并。已存在的 mask 像素不动，不替换整体分割结果。
+
+        :param mask: 原二值人体 mask（uint8, 0/255），尺寸 h×w
+        :param landmarks: 关键点列表（含 x,y 归一化与 visibility）
+        :param w, h: 画布宽高（像素）
+        :return: 修补后的二值 mask（uint8, 0/255）
+        """
+        if not landmarks or len(landmarks) < 17:
+            return mask
+
+        min_vis = cfg.MASK_LIMB_MIN_VIS
+        max_w = float(cfg.MASK_LIMB_WIDTH)
+        radius = int(round(cfg.MASK_LIMB_PATCH_RADIUS))
+        if max_w < 2:
+            max_w = 2.0
+        if radius < 1:
+            radius = 1
+
+        # 关键点索引（MediaPipe Pose 拓扑）
+        # 左臂：11 肩、13 肘、15 腕；右臂：12 肩、14 肘、16 腕
+        limb_chains = [
+            (11, 13, 15),  # 左臂
+            (12, 14, 16),  # 右臂
+        ]
+
+        def _to_px(lm):
+            return (np.clip(lm["x"], 0.0, 1.0) * (w - 1),
+                    np.clip(lm["y"], 0.0, 1.0) * (h - 1))
+
+        def _vis(lm):
+            v = lm.get("visibility")
+            return v if isinstance(v, (int, float)) else 0.0
+
+        def _segment_missing(p0, p1):
+            """判断两点连线中点附近是否基本缺失（用于决定是否修补该段）。"""
+            mx = int((p0[0] + p1[0]) / 2.0)
+            my = int((p0[1] + p1[1]) / 2.0)
+            x0, x1 = max(0, mx - radius), min(w, mx + radius)
+            y0, y1 = max(0, my - radius), min(h, my + radius)
+            if x1 <= x0 or y1 <= y0:
+                return False
+            region = mask[y0:y1, x0:x1]
+            if region.size == 0:
+                return False
+            # 该邻域内人体像素占比极低 → 视为缺失
+            return cv2.countNonZero(region) < (region.size * 0.25)
+
+        def _fill_limb(repair, a, b, wa, wb):
+            """
+            在 repair 上填充一段锥形手臂区域：从 a（宽 wa）到 b（宽 wb）。
+            通过构造垂直于骨骼方向的梯形（四边形）实现，避免刚性直线伪影。
+            """
+            ax, ay = a
+            bx, by = b
+            dx, dy = bx - ax, by - ay
+            length = float(np.hypot(dx, dy))
+            if length < 1e-3:
+                # 两点重合：画圆
+                cv2.circle(repair, (int(ax), int(ay)),
+                           max(1, int(wa / 2.0)), 255, -1, cv2.LINE_AA)
+                return
+            # 单位法向量
+            nx, ny = -dy / length, dx / length
+            ha, hb = wa / 2.0, wb / 2.0
+            pts = np.array([
+                [ax + nx * ha, ay + ny * ha],
+                [ax - nx * ha, ay - ny * ha],
+                [bx - nx * hb, by - ny * hb],
+                [bx + nx * hb, by + ny * hb],
+            ], dtype=np.int32)
+            cv2.fillPoly(repair, [pts], 255, cv2.LINE_AA)
+
+        repair = np.zeros((h, w), dtype=np.uint8)
+        for shoulder, elbow, wrist in limb_chains:
+            lm_s, lm_e, lm_w = landmarks[shoulder], landmarks[elbow], landmarks[wrist]
+            # 可见性不足则跳过整条臂
+            if _vis(lm_s) < min_vis or _vis(lm_e) < min_vis or _vis(lm_w) < min_vis:
+                continue
+            ps = _to_px(lm_s)
+            pe = _to_px(lm_e)
+            pw = _to_px(lm_w)
+            # 仅当该段在分割中缺失时才修补（只补不盖）
+            if _segment_missing(ps, pe) or _segment_missing(pe, pw):
+                # 锥形宽度：肩最宽，肘次之，腕最细（模拟真实手臂粗细变化）
+                w_sh = max_w
+                w_el = max_w * 0.72
+                w_wr = max_w * 0.5
+                _fill_limb(repair, ps, pe, w_sh, w_el)
+                _fill_limb(repair, pe, pw, w_el, w_wr)
+                # 关节处补小椭圆，避免段间断裂（半径取相邻宽度的一半）
+                cv2.ellipse(repair, (int(ps[0]), int(ps[1])),
+                            (int(w_sh / 2.0), int(w_sh / 2.0)), 0, 0, 360,
+                            255, -1, cv2.LINE_AA)
+                cv2.ellipse(repair, (int(pe[0]), int(pe[1])),
+                            (int(w_el / 2.0), int(w_el / 2.0)), 0, 0, 360,
+                            255, -1, cv2.LINE_AA)
+                cv2.ellipse(repair, (int(pw[0]), int(pw[1])),
+                            (int(w_wr / 2.0), int(w_wr / 2.0)), 0, 0, 360,
+                            255, -1, cv2.LINE_AA)
+
+        # 与原 mask 做 OR 合并（保留原 segmentation 结果）
+        if cv2.countNonZero(repair) > 0:
+            mask = cv2.bitwise_or(mask, repair)
+        return mask
 
     def get_pose_data(self, frame):
         """

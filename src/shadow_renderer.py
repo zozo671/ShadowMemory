@@ -12,7 +12,7 @@ import numpy as np
 import time
 import random
 
-import config as cfg
+from . import config as cfg
 
 
 class ShadowRenderer:
@@ -302,6 +302,10 @@ class ShadowRenderer:
             fg_color = cfg.SHADOW_FG_COLOR      # 黑底 → 白影
             after_color = cfg.SHADOW_AFTERIMAGE_COLOR
 
+        # 历史召回 ghost 使用独立颜色（蓝紫色），与实时白色影子区分；
+        # 不影响实时渲染（fg_color 仍为白）与连续拖尾 after_color。
+        history_ghost_color = cfg.HISTORY_GHOST_COLOR
+
         # 根据 analyzer 输出决定残影强度倍率与行为学习习惯
         intensity = 1.0
         is_frequent = False
@@ -381,56 +385,59 @@ class ShadowRenderer:
             canvas = canvas * (1.0 - soft3) + fg * soft3
 
             # 5. 采样保存新残影（带独立起始 alpha，最新影子最亮）
-            self.frame_count += 1
+            # 连续拖尾开关：ENABLE_CONTINUOUS_TRAIL=False 时完全跳过，
+            # 不再生成跟随人体移动的连续残影；历史召回 ghost 不受影响。
+            if getattr(cfg, 'ENABLE_CONTINUOUS_TRAIL', True):
+                self.frame_count += 1
 
-            # 高频动作 / 习惯回响 → 影子更容易出现：轻微缩短采样间隔、提高起始透明度
-            interval = max(1, cfg.AFTERIMAGE_INTERVAL // 2) if is_frequent else cfg.AFTERIMAGE_INTERVAL
-            habit_boost = cfg.HABIT_BOOST if is_frequent else 1.0
-            if habit_strength > 0.5:
-                habit_boost = max(habit_boost, 1.0 + 0.2 * habit_strength)
-                interval = max(1, int(round(interval * (1.0 - 0.15 * habit_strength))))
+                # 高频动作 / 习惯回响 → 影子更容易出现：轻微缩短采样间隔、提高起始透明度
+                interval = max(1, cfg.AFTERIMAGE_INTERVAL // 2) if is_frequent else cfg.AFTERIMAGE_INTERVAL
+                habit_boost = cfg.HABIT_BOOST if is_frequent else 1.0
+                if habit_strength > 0.5:
+                    habit_boost = max(habit_boost, 1.0 + 0.2 * habit_strength)
+                    interval = max(1, int(round(interval * (1.0 - 0.15 * habit_strength))))
 
-            def _spawn(fixed_alpha=None):
-                # 在低分辨率上预模糊并归一化为 float（0~1），后续渲染直接复用，减少每帧运算
-                if scale < 1.0:
-                    small_mask = cv2.resize(body_mask, (sw, sh), interpolation=cv2.INTER_NEAREST)
-                else:
-                    small_mask = body_mask
+                def _spawn(fixed_alpha=None):
+                    # 在低分辨率上预模糊并归一化为 float（0~1），后续渲染直接复用，减少每帧运算
+                    if scale < 1.0:
+                        small_mask = cv2.resize(body_mask, (sw, sh), interpolation=cv2.INTER_NEAREST)
+                    else:
+                        small_mask = body_mask
 
-                # 根据缩放比例自适应模糊核，保证视觉一致性
-                blur_k = max(1, int(round(cfg.AFTERIMAGE_BLUR * max(scale, 0.3))))
-                if blur_k % 2 == 0:
-                    blur_k += 1
-                blurred_small = cv2.GaussianBlur(small_mask, (blur_k, blur_k), 0).astype(np.float32) / 255.0
+                    # 根据缩放比例自适应模糊核，保证视觉一致性
+                    blur_k = max(1, int(round(cfg.AFTERIMAGE_BLUR * max(scale, 0.3))))
+                    if blur_k % 2 == 0:
+                        blur_k += 1
+                    blurred_small = cv2.GaussianBlur(small_mask, (blur_k, blur_k), 0).astype(np.float32) / 255.0
 
-                if fixed_alpha is not None:
-                    start_alpha = float(fixed_alpha)
-                else:
-                    start_alpha = float(np.clip(
-                        cfg.AFTERIMAGE_START_ALPHA * habit_boost
-                        * (0.6 + 0.4 * min(intensity, 2.0) / 2.0),
-                        0.05, 0.7
-                    ))
+                    if fixed_alpha is not None:
+                        start_alpha = float(fixed_alpha)
+                    else:
+                        start_alpha = float(np.clip(
+                            cfg.AFTERIMAGE_START_ALPHA * habit_boost
+                            * (0.6 + 0.4 * min(intensity, 2.0) / 2.0),
+                            0.05, 0.7
+                        ))
 
-                cmask_small = blurred_small[:, :, np.newaxis] * np.array(after_color, dtype=np.float32)
-                self.afterimages.append({
-                    "cmask_small": cmask_small,
-                    "birth": time.time(),
-                    "start": start_alpha,
-                })
-                # 安全上限，防止极端情况下无限增长
-                if len(self.afterimages) > cfg.AFTERIMAGE_COUNT * 3:
-                    self.afterimages.pop(0)
+                    cmask_small = blurred_small[:, :, np.newaxis] * np.array(after_color, dtype=np.float32)
+                    self.afterimages.append({
+                        "cmask_small": cmask_small,
+                        "birth": time.time(),
+                        "start": start_alpha,
+                    })
+                    # 安全上限，防止极端情况下无限增长
+                    if len(self.afterimages) > cfg.AFTERIMAGE_COUNT * 3:
+                        self.afterimages.pop(0)
 
-            # 常规采样
-            if self.frame_count % interval == 0:
-                _spawn()
+                # 常规采样
+                if self.frame_count % interval == 0:
+                    _spawn()
 
-            # 已知动作重现 → 提前出现的残影（预回声）：
-            # 当切换到一个"曾经出现过"的动作时，立即生成一帧淡残影，
-            # 仿佛数字影子"预判"了用户的习惯动作。
-            if action_changed and (is_known or memory_echo):
-                _spawn(fixed_alpha=cfg.ANTICIPATION_ALPHA * (0.8 + 0.4 * habit_strength))
+                # 已知动作重现 → 提前出现的残影（预回声）：
+                # 当切换到一个"曾经出现过"的动作时，立即生成一帧淡残影，
+                # 仿佛数字影子"预判"了用户的习惯动作。
+                if action_changed and (is_known or memory_echo):
+                    _spawn(fixed_alpha=cfg.ANTICIPATION_ALPHA * (0.8 + 0.4 * habit_strength))
 
         # 6. 过去动作召回：仅作为当前实时影子的“附加幽灵”，不能替代当前影子
         recall_duration = 4.0
@@ -441,7 +448,6 @@ class ShadowRenderer:
         if not has_body:
             self.recall_active = False
             self.recall_state = None
-            print("[renderer] recall skipped: no current body mask")
         elif memory_state and memory_state.get("recall_triggered") and memory_state.get("recall_target"):
             target = memory_state["recall_target"]
             target_landmarks = target.get("landmarks", []) or []
@@ -449,7 +455,7 @@ class ShadowRenderer:
                 # 触发 recall：一次性生成多个历史 ghost 图层（不再每帧实时更新），
                 # 使其表现为运动残影而非播放卡顿的人形动画。
                 try:
-                    self._spawn_history_ghosts(target, after_color, w, h)
+                    self._spawn_history_ghosts(target, history_ghost_color, w, h)
                     print("[renderer] recall accepted: spawned history ghosts")
                 except Exception:
                     print("[renderer] recall accepted but failed to spawn ghosts")
@@ -514,16 +520,16 @@ class ShadowRenderer:
                             k = k + 1
                         soft = cv2.GaussianBlur(mask_shifted, (k, k), 0).astype(np.float32) / 255.0
                         soft3 = soft[:, :, np.newaxis]
-                        fg = np.array(fg_color, dtype=np.float32)
+                        fg = np.array(history_ghost_color, dtype=np.float32)
                         overlay = fg * soft3
                         canvas = canvas * (1.0 - final_alpha) + overlay * final_alpha
                         print("[renderer] using history pose (mask)")
                     except Exception:
-                        canvas = self._draw_history_ghost(canvas, landmarks, final_alpha, np.array(fg_color, dtype=np.float32), offset=offset)
+                        canvas = self._draw_history_ghost(canvas, landmarks, final_alpha, np.array(history_ghost_color, dtype=np.float32), offset=offset)
                         print("[renderer] using history pose (fallback hull)")
                 else:
                     # 没有保存的 mask，回退到由关键点生成的凸包掩码方法
-                    canvas = self._draw_history_ghost(canvas, landmarks, final_alpha, np.array(fg_color, dtype=np.float32), offset=offset)
+                    canvas = self._draw_history_ghost(canvas, landmarks, final_alpha, np.array(history_ghost_color, dtype=np.float32), offset=offset)
                     print("[renderer] using history pose")
 
                 if elapsed >= duration:
@@ -532,7 +538,7 @@ class ShadowRenderer:
                 print("[renderer] history pose invalid, fallback to realtime")
                 self.recall_state = None
         else:
-            print("[renderer] using realtime pose")
+            pass
 
         if memory_state is not None and (self.recall_active or self.recall_state is not None):
             memory_state["recall_triggered"] = True
